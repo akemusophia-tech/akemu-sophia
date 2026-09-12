@@ -1,4 +1,3 @@
-import { gateway, generateText } from 'ai'
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
@@ -31,17 +30,23 @@ export async function POST(request: Request) {
     if (!parsed.success) return NextResponse.json({ error: 'Please check the form fields and try again.' }, { status: 400 })
 
     const input = parsed.data
-    let analysis = analysisSchema.parse({})
-    try {
-      const result = await generateText({
-        model: gateway('google/gemini-3.5-flash'),
-        system: 'You are a concise support ticket analyst. Return only valid JSON with keys: category, summary, sentiment, urgency, suggestedPriority, nextSteps. nextSteps must be an array of short strings. Do not include markdown.',
-        prompt: JSON.stringify(input),
-      })
-      const cleaned = result.text.replace(/^```json\s*|\s*```$/g, '').trim()
-      analysis = analysisSchema.parse(JSON.parse(cleaned))
-    } catch {
-      analysis = analysisSchema.parse({ category: input.category, urgency: input.urgency, suggestedPriority: input.urgency })
+    let analysis = analysisSchema.parse({ category: input.category, urgency: input.urgency, suggestedPriority: input.urgency })
+    const apiKey = process.env.GEMINI_API_KEY
+    if (apiKey) {
+      try {
+        const geminiResponse = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: `Analyze this support ticket. Return only JSON with keys category, summary, sentiment, urgency, suggestedPriority, nextSteps.\n${JSON.stringify(input)}` }] }], generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } }),
+        })
+        if (geminiResponse.ok) {
+          const data = await geminiResponse.json()
+          const text = data.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? '').join('')
+          if (text) analysis = analysisSchema.parse(JSON.parse(text.replace(/^```json\s*|\s*```$/g, '').trim()))
+        }
+      } catch (error) {
+        console.error('[v0] Ticket analysis failed, using submitted fields:', error)
+      }
     }
 
     const supabase = await createClient()
