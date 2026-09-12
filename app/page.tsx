@@ -28,7 +28,7 @@ export default function Page() {
         <span className="grid size-10 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20"><LifeBuoy size={20} /></span>
         <span className="text-lg font-semibold tracking-tight text-foreground">Skyline Support</span>
       </Link>
-      <Link href="/dashboard" className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition hover:border-primary hover:text-primary">Team dashboard <ArrowRight size={15} /></Link>
+      <div className="flex items-center gap-2"><Link href="/ask" className="hidden rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition hover:border-primary hover:text-primary sm:inline-flex">Ask Gemini</Link><Link href="/dashboard" className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition hover:border-primary hover:text-primary">Team dashboard <ArrowRight size={15} /></Link></div>
     </header>
 
     <section className="mx-auto grid w-full max-w-7xl gap-12 px-5 pb-16 pt-10 sm:px-8 md:pt-16 lg:grid-cols-[0.86fr_1.14fr] lg:gap-20 lg:px-12 lg:pb-24">
