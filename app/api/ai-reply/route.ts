@@ -1,4 +1,3 @@
-import { gateway, generateText } from 'ai'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 
@@ -42,14 +41,40 @@ export async function POST(request: Request) {
 
   try {
     const { ticket, history, message } = parsed.data
-    const result = await generateText({
-      model: gateway('google/gemini-3.5-flash'),
-      system: 'You are Carewise support copilot. Draft calm, specific, human replies. Never invent refunds, guarantees, timelines, account changes, or policy exceptions. If details are missing, ask one focused question. Return only JSON with reply and nextAction.',
-      prompt: JSON.stringify({ ticket, conversation: [...history, ...(message ? [{ role: 'agent', content: message }] : [])] }),
+    const apiKey = process.env.GEMINI_API_KEY
+    if (!apiKey) {
+      console.error('[v0] GEMINI_API_KEY is not configured')
+      return NextResponse.json({ error: 'The assistant is not configured yet.' }, { status: 503 })
+    }
+
+    const prompt = [
+      'You are Carewise support copilot. Draft calm, specific, human replies.',
+      'Never invent refunds, guarantees, timelines, account changes, or policy exceptions.',
+      'If details are missing, ask one focused question.',
+      'Return only valid JSON with exactly two keys: reply and nextAction.',
+      '',
+      JSON.stringify({ ticket, conversation: [...history, ...(message ? [{ role: 'agent', content: message }] : [])] }),
+    ].join('\n')
+
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.35, responseMimeType: 'application/json' },
+      }),
     })
-    const clean = result.text.replace(/^```json\s*|\s*```$/g, '').trim()
-    const response = responseSchema.parse(JSON.parse(clean))
-    return NextResponse.json(response)
+    if (!response.ok) {
+      console.error('[v0] Gemini request failed', response.status)
+      return NextResponse.json({ error: 'Gemini could not respond right now. Try again.' }, { status: 503 })
+    }
+
+    const data = await response.json()
+    const text = data.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text ?? '').join('')
+    if (!text) throw new Error('Gemini returned an empty response')
+    const clean = text.replace(/^```json\s*|\s*```$/g, '').trim()
+    const result = responseSchema.parse(JSON.parse(clean))
+    return NextResponse.json(result)
   } catch (error) {
     console.error('[v0] AI reply failed', error)
     return NextResponse.json({ error: 'The assistant is unavailable. Try again or write a reply manually.' }, { status: 503 })
