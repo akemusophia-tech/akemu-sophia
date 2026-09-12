@@ -9,13 +9,13 @@ import { createClient } from '@/lib/supabase/client'
 
 export default function SignUpPage() {
   const router = useRouter()
-  const supabase = createClient()
   const [form, setForm] = useState({ email: '', password: '', confirm: '' })
   const [loading, setLoading] = useState(false)
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (form.password.length < 8 || form.password !== form.confirm) { toast.error('Use matching passwords with at least 8 characters.'); return }
     setLoading(true)
+    const supabase = createClient()
     const { error } = await supabase.auth.signUp({ email: form.email, password: form.password })
     if (error) { toast.error(error.message); setLoading(false); return }
     toast.success('Check your email to confirm your agent account.')
