@@ -1,15 +1,20 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Check, CheckCircle2, Clock3, Inbox, Loader2, MessageCircle, RefreshCw, Search, Send, Sparkles, UserRound, X } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { ArrowLeft, Check, CheckCircle2, Clock3, Inbox, Loader2, LogOut, MessageCircle, RefreshCw, Search, Send, Sparkles, UserRound, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import { Toaster, toast } from 'sonner'
 import { EmptyState, PageHeader, PriorityPill, StatusPill, SupportShell } from '@/components/support-shell'
+import { createClient } from '@/lib/supabase/client'
 
 type Ticket = { id: string; reference_number: string; requester_name: string; requester_email: string; subject: string; description: string; category: string; urgency: string; status: string; ai_summary: string | null; ai_sentiment: string | null; ai_suggested_priority: string | null; ai_next_steps: string[]; created_at: string }
 type Message = { role: 'customer' | 'assistant' | 'agent'; content: string }
 const tabs = ['All', 'Open', 'In Progress', 'Resolved']
 
 export default function Dashboard() {
+  const router = useRouter()
+  const [supabase, setSupabase] = useState<ReturnType<typeof createClient> | null>(null)
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
@@ -19,19 +24,151 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [updating, setUpdating] = useState(false)
+  const [user, setUser] = useState<{ id: string; email: string } | null>(null)
+  const [checkingAuth, setCheckingAuth] = useState(true)
 
-  async function load() { setLoading(true); setError(''); try { const res = await fetch('/api/tickets', { cache: 'no-store' }); if (!res.ok) throw new Error(); const data = await res.json(); setTickets(data.tickets ?? []) } catch { setError('We could not load the queue. Try refreshing the page.') } finally { setLoading(false) } }
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    const client = createClient()
+    setSupabase(client)
+
+    async function checkAuth() {
+      try {
+        const {
+          data: { user: authUser },
+        } = await client.auth.getUser()
+        if (!authUser) {
+          router.push('/auth/login')
+          return
+        }
+        setUser({ id: authUser.id, email: authUser.email || '' })
+      } catch (err) {
+        console.error('[v0] Auth check failed:', err)
+        router.push('/auth/login')
+      } finally {
+        setCheckingAuth(false)
+      }
+    }
+    checkAuth()
+  }, [router])
+
+  async function load() {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch('/api/tickets', { cache: 'no-store' })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      setTickets(data.tickets ?? [])
+    } catch {
+      setError('We could not load the queue. Try refreshing the page.')
+      toast.error('Failed to load tickets')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!checkingAuth && user) {
+      load()
+    }
+  }, [checkingAuth, user])
   const visible = useMemo(() => tickets.filter((ticket) => { const text = `${ticket.subject} ${ticket.requester_name} ${ticket.reference_number} ${ticket.category}`.toLowerCase(); return (tab === 'All' || ticket.status === tab) && (urgency === 'All urgency' || ticket.urgency === urgency) && text.includes(query.toLowerCase()) }).sort((a, b) => sort === 'Newest first' ? +new Date(b.created_at) - +new Date(a.created_at) : +new Date(a.created_at) - +new Date(b.created_at)), [tickets, tab, urgency, query, sort])
-  async function updateStatus(status: string) { if (!selected) return; const previous = selected; const next = { ...selected, status }; setSelected(next); setTickets((items) => items.map((item) => item.id === selected.id ? next : item)); setUpdating(true); try { const res = await fetch('/api/tickets', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: selected.id, status }) }); if (!res.ok) throw new Error() } catch { setSelected(previous); setTickets((items) => items.map((item) => item.id === previous.id ? previous : item)); setError('That update did not save. Please try again.') } finally { setUpdating(false) } }
+  async function updateStatus(status: string) {
+    if (!selected) return
+    const previous = selected
+    const next = { ...selected, status }
+    setSelected(next)
+    setTickets((items) => items.map((item) => (item.id === selected.id ? next : item)))
+    setUpdating(true)
+    try {
+      const res = await fetch('/api/tickets', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id, status }),
+      })
+      if (!res.ok) throw new Error()
+      toast.success(`Ticket updated to ${status}`, { duration: 2000 })
+    } catch {
+      setSelected(previous)
+      setTickets((items) => items.map((item) => (item.id === previous.id ? previous : item)))
+      setError('That update did not save. Please try again.')
+      toast.error('Failed to update ticket')
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  async function signOut() {
+    if (!supabase) return
+    try {
+      await supabase.auth.signOut()
+      toast.success('Signed out successfully')
+      router.push('/')
+    } catch (err) {
+      toast.error('Failed to sign out')
+    }
+  }
+
+  if (checkingAuth) {
+    return (
+      <SupportShell>
+        <section className="flex h-screen items-center justify-center">
+          <div className="text-center">
+            <Loader2 className="mx-auto mb-4 animate-spin" size={32} />
+            <p className="text-muted-foreground">Verifying access...</p>
+          </div>
+        </section>
+      </SupportShell>
+    )
+  }
+
+  if (!user) {
+    return null
+  }
   const count = (status: string) => tickets.filter((ticket) => ticket.status === status).length
 
-  return <SupportShell><section className="px-4 py-6 sm:px-6 lg:px-8 lg:py-9"><PageHeader eyebrow="Support operations" title="Inbox" description="Review requests, collaborate on replies, and keep every customer moving." action={<button onClick={load} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 text-sm font-semibold hover:border-primary hover:text-primary"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh</button>} />
+  return (
+    <SupportShell>
+      <Toaster position="top-center" />
+      <section className="px-4 py-6 sm:px-6 lg:px-8 lg:py-9">
+        <div className="mb-8 flex items-center justify-between">
+          <PageHeader
+            eyebrow="Support operations"
+            title="Inbox"
+            description="Review requests, collaborate on replies, and keep every customer moving."
+            action={
+              <button
+                onClick={load}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-border bg-card px-4 text-sm font-semibold hover:border-primary hover:text-primary"
+              >
+                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
+              </button>
+            }
+          />
+          <div className="flex items-center gap-4">
+            <div className="hidden text-right sm:block">
+              <p className="text-sm font-semibold text-foreground">{user.email}</p>
+              <p className="text-xs text-muted-foreground">Agent account</p>
+            </div>
+            <button
+              onClick={signOut}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-semibold hover:border-red-400 hover:text-red-600"
+              title="Sign out"
+            >
+              <LogOut size={16} />
+              <span className="hidden sm:inline">Sign out</span>
+            </button>
+          </div>
+        </div>
     <div className="mt-7 grid auto-cols-[minmax(180px,1fr)] grid-flow-col gap-3 overflow-x-auto pb-1 sm:grid-flow-row sm:grid-cols-2 xl:grid-cols-4"><Stat icon={Inbox} label="Open" value={count('Open')} /><Stat icon={Clock3} label="In progress" value={count('In Progress')} /><Stat icon={MessageCircle} label="AI assisted" value={tickets.filter((ticket) => ticket.ai_summary).length} /><Stat icon={CheckCircle2} label="Resolved" value={count('Resolved')} /></div>
     <div className="mt-7 overflow-hidden rounded-2xl border border-border bg-card shadow-sm"><div className="flex flex-col gap-4 border-b border-border p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between"><div><h2 className="font-semibold">Ticket queue</h2><p className="mt-1 text-xs text-muted-foreground">{visible.length} request{visible.length === 1 ? '' : 's'} in this view</p></div><div className="flex flex-col gap-2 sm:flex-row"><label className="relative"><Search className="absolute left-3 top-3 text-muted-foreground" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} className="h-11 w-full rounded-xl border border-input bg-background pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10 sm:w-64" placeholder="Search tickets" aria-label="Search tickets" /></label><select value={urgency} onChange={(event) => setUrgency(event.target.value)} className="h-11 rounded-xl border border-input bg-background px-3 text-sm font-semibold" aria-label="Filter by urgency"><option>All urgency</option><option>Critical</option><option>High</option><option>Normal</option><option>Low</option></select><select value={sort} onChange={(event) => setSort(event.target.value)} className="h-11 rounded-xl border border-input bg-background px-3 text-sm font-semibold" aria-label="Sort tickets"><option>Newest first</option><option>Oldest first</option></select></div></div><div className="flex gap-1 overflow-x-auto border-b border-border px-4 pt-3 sm:px-5">{tabs.map((item) => <button key={item} onClick={() => setTab(item)} className={`min-h-11 whitespace-nowrap border-b-2 px-3 text-sm font-semibold ${tab === item ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{item}{item !== 'All' && <span className="ml-2 text-xs">{count(item)}</span>}</button>)}</div>{error && <div role="alert" className="m-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
       <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-[760px] text-left"><thead><tr className="border-b border-border text-[11px] uppercase tracking-widest text-muted-foreground"><th className="px-5 py-4">Request</th><th className="px-4 py-4">Category</th><th className="px-4 py-4">Priority</th><th className="px-4 py-4">Status</th><th className="px-5 py-4">Received</th></tr></thead><tbody>{loading ? <LoadingRows /> : visible.length === 0 ? <tr><td colSpan={5}><EmptyState title="No tickets found" text="Try changing your search or filters." /></td></tr> : visible.map((ticket) => <tr tabIndex={0} key={ticket.id} onClick={() => setSelected(ticket)} onKeyDown={(event) => event.key === 'Enter' && setSelected(ticket)} className="cursor-pointer border-b border-border last:border-0 hover:bg-muted/50 focus:bg-muted/50 focus:outline-none"><td className="px-5 py-4"><TicketIdentity ticket={ticket} /></td><td className="px-4 py-4 text-sm text-muted-foreground">{ticket.category}</td><td className="px-4 py-4"><PriorityPill value={ticket.ai_suggested_priority || ticket.urgency} /></td><td className="px-4 py-4"><StatusPill status={ticket.status} /></td><td className="px-5 py-4 text-xs text-muted-foreground">{new Date(ticket.created_at).toLocaleDateString()}</td></tr>)}</tbody></table></div>
       <div className="divide-y divide-border md:hidden">{loading ? <div className="p-5 text-sm text-muted-foreground">Loading your queue...</div> : visible.length === 0 ? <EmptyState title="No tickets found" text="Try changing your search or filters." /> : visible.map((ticket) => <button key={ticket.id} onClick={() => setSelected(ticket)} className="block min-h-28 w-full p-4 text-left hover:bg-muted/50"><TicketIdentity ticket={ticket} /><div className="mt-3 flex items-center gap-3"><StatusPill status={ticket.status} /><PriorityPill value={ticket.ai_suggested_priority || ticket.urgency} /><span className="ml-auto text-xs text-muted-foreground">{ticket.category}</span></div></button>)}</div>
-    </div></section>{selected && <TicketDetail ticket={selected} close={() => setSelected(null)} updateStatus={updateStatus} updating={updating} />}</SupportShell>
+        </div>
+      </section>
+      {selected && <TicketDetail ticket={selected} close={() => setSelected(null)} updateStatus={updateStatus} updating={updating} />}
+    </SupportShell>
+  )
 }
 
 function Stat({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: number }) { return <div className="rounded-2xl border border-border bg-card p-4 shadow-sm sm:p-5"><div className="flex items-center justify-between"><div><p className="text-sm text-muted-foreground">{label}</p><p className="mt-2 text-3xl font-semibold tracking-tight">{value}</p></div><span className="grid size-10 place-items-center rounded-xl bg-primary/10 text-primary"><Icon size={19} /></span></div><p className="mt-4 text-xs text-muted-foreground">Current workspace queue</p></div> }
@@ -45,7 +182,38 @@ function TicketDetail({ ticket, close, updateStatus, updating }: { ticket: Ticke
   const [replyError, setReplyError] = useState('')
   const [mobileDetail, setMobileDetail] = useState(false)
 
-  async function generate(message = '') { setGenerating(true); setReplyError(''); try { const response = await fetch('/api/ai-reply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: { requesterName: ticket.requester_name, subject: ticket.subject, category: ticket.category, urgency: ticket.urgency, description: ticket.description }, history: messages, message }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setMessages((current) => [...current, { role: 'assistant', content: data.reply }]); setDraft('') } catch (error) { setReplyError(error instanceof Error ? error.message : 'The assistant could not respond. Try again.') } finally { setGenerating(false) } }
+  async function generate(message = '') {
+    setGenerating(true)
+    setReplyError('')
+    try {
+      const response = await fetch('/api/ai-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticket: {
+            requesterName: ticket.requester_name,
+            subject: ticket.subject,
+            category: ticket.category,
+            urgency: ticket.urgency,
+            description: ticket.description,
+          },
+          history: messages,
+          message,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error)
+      setMessages((current) => [...current, { role: 'assistant', content: data.reply }])
+      setDraft('')
+      toast.success('AI response generated', { duration: 2000 })
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'The assistant could not respond. Try again.'
+      setReplyError(msg)
+      toast.error(msg, { duration: 3000 })
+    } finally {
+      setGenerating(false)
+    }
+  }
   function send() { const message = draft.trim(); if (!message || generating) return; setMessages((current) => [...current, { role: 'agent', content: message }]); void generate(message) }
 
   return <div className="fixed inset-0 z-50 flex items-end justify-center bg-foreground/25 sm:items-center sm:p-5" onClick={close}><article className="flex max-h-[96vh] w-full max-w-3xl flex-col overflow-hidden rounded-t-3xl border border-border bg-card shadow-2xl sm:max-h-[90vh] sm:rounded-3xl" onClick={(event) => event.stopPropagation()}><header className="flex items-start justify-between gap-4 border-b border-border p-5 sm:p-7"><div className="min-w-0"><button onClick={close} className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground sm:hidden"><ArrowLeft size={16} /> Back to inbox</button><p className="text-xs font-bold uppercase tracking-widest text-primary">{ticket.reference_number}</p><h2 className="mt-2 truncate text-xl font-semibold tracking-tight">{ticket.subject}</h2><p className="mt-2 truncate text-sm text-muted-foreground">{ticket.requester_name} · {ticket.requester_email}</p></div><button onClick={close} className="grid size-11 shrink-0 place-items-center rounded-xl hover:bg-muted" aria-label="Close ticket"><X size={18} /></button></header><div className="grid min-h-0 flex-1 lg:grid-cols-[1fr_220px]"><div className="flex min-h-0 flex-1 flex-col"><div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 sm:p-7">{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`flex ${message.role === 'agent' ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'customer' ? 'border border-border bg-background' : message.role === 'assistant' ? 'border border-primary/20 bg-primary/5' : 'bg-primary text-primary-foreground'}`}><div className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider opacity-65">{message.role === 'customer' ? <UserRound size={13} /> : message.role === 'assistant' ? <Sparkles size={13} /> : <Check size={13} />}{message.role === 'customer' ? 'Customer' : message.role === 'assistant' ? 'Carewise copilot' : 'You'}</div>{message.content}</div></div>)}{generating && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 size={15} className="animate-spin" /> Drafting a thoughtful reply...</div>}{replyError && <div role="alert" className="rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{replyError}</div>}</div><div className="border-t border-border p-4 sm:p-5"><div className="flex items-end gap-2 rounded-2xl border border-input bg-background p-2 focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/10"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); send() } }} rows={2} className="min-h-12 flex-1 resize-none bg-transparent px-2 py-1 text-sm outline-none" placeholder="Write a reply or ask the copilot..." aria-label="Reply message" /><button onClick={send} disabled={!draft.trim() || generating} className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" aria-label="Send reply"><Send size={17} /></button></div><div className="mt-3 flex flex-wrap items-center justify-between gap-2"><button onClick={() => void generate()} disabled={generating} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-primary/20 px-3 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50"><Sparkles size={14} /> {messages.some((message) => message.role === 'assistant') ? 'Regenerate reply' : 'Draft with copilot'}</button><p className="text-[11px] text-muted-foreground">Enter to send · Shift + Enter for a new line</p></div></div></div><aside className="hidden border-l border-border bg-muted/30 p-5 lg:block"><p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Ticket details</p><dl className="mt-5 space-y-5 text-sm"><div><dt className="text-muted-foreground">Status</dt><dd className="mt-1"><StatusPill status={ticket.status} /></dd></div><div><dt className="text-muted-foreground">Priority</dt><dd className="mt-1 font-semibold">{ticket.ai_suggested_priority || ticket.urgency}</dd></div><div><dt className="text-muted-foreground">Category</dt><dd className="mt-1 font-semibold">{ticket.category}</dd></div><div><dt className="text-muted-foreground">Received</dt><dd className="mt-1 font-semibold">{new Date(ticket.created_at).toLocaleDateString()}</dd></div></dl><div className="mt-8 space-y-2"><button onClick={() => updateStatus('In Progress')} disabled={updating || ticket.status === 'In Progress'} className="flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border border-border bg-card text-xs font-semibold hover:border-primary disabled:opacity-50"><Clock3 size={14} /> Mark in progress</button><button onClick={() => updateStatus('Resolved')} disabled={updating || ticket.status === 'Resolved'} className="flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-primary text-xs font-semibold text-primary-foreground disabled:opacity-50"><CheckCircle2 size={14} /> Resolve ticket</button></div></aside></div><footer className="flex gap-2 border-t border-border bg-muted/30 p-4 lg:hidden"><button onClick={() => updateStatus('In Progress')} disabled={updating || ticket.status === 'In Progress'} className="min-h-11 flex-1 rounded-xl border border-border bg-card text-xs font-semibold disabled:opacity-50">In progress</button><button onClick={() => updateStatus('Resolved')} disabled={updating || ticket.status === 'Resolved'} className="min-h-11 flex-1 rounded-xl bg-primary text-xs font-semibold text-primary-foreground disabled:opacity-50">Resolve ticket</button></footer></article></div>
